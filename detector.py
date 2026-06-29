@@ -4,13 +4,13 @@ import win32con
 
 hwnd = win32gui.FindWindow(None, "Pirates Online - Moonlight Haven")
 
-f5_presionado = False
+multiply_presionad = False
 
 while True:
-    estado = bool(win32api.GetAsyncKeyState(win32con.VK_F5))
+    estado = bool(win32api.GetAsyncKeyState(win32con.VK_MULTIPLY))
 
-    if estado and not f5_presionado:
+    if estado and not multiply_presionad:
         pos = win32gui.ScreenToClient(hwnd, win32api.GetCursorPos())
         print(f"X: {pos[0]}, Y: {pos[1]}")
 
-    f5_presionado = estado
+    multiply_presionad = estado
