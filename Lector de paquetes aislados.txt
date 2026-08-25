@@ -1,0 +1,134 @@
+/**
+ * trace_teleport.js - Frida 17+ (Bypass de Proxy ExitLag & Deep Stack Unwinding)
+ */
+
+console.log("\n[+] ========================================================");
+console.log("[+] Script trace_teleport.js cargado en Frida 17+");
+console.log("[+] Inicializando rastreador profundo anti-proxy...");
+console.log("[+] ========================================================\n");
+
+let ganchosAplicados = false;
+let faseCalibracion = true;
+const idlesRegistrados = new Set();
+
+setTimeout(function() {
+    faseCalibracion = false;
+    console.log("\n[!] ========================================================");
+    console.log("[!] FASE DE CALIBRACIÓN TERMINADA");
+    console.log("[!] Iniciando inspección profunda con filtrado de proxy...");
+    console.log("[!] ========================================================\n");
+}, 15000);
+
+function analizarPaquete(tipoHook, bufferPtr, len, contexto) {
+    if (len === 0 || bufferPtr.isNull()) return;
+
+    try {
+        const opcode = bufferPtr.readU8();
+        const firmaPaquete = `${len}-${opcode}`;
+
+        if (faseCalibracion) {
+            if (!idlesRegistrados.has(firmaPaquete)) {
+                idlesRegistrados.add(firmaPaquete);
+                console.log(`[Calibrando] Patrón IDLE detectado -> Tam: ${len} bytes | Opcode: 0x${opcode.toString(16)}`);
+            }
+        } else {
+            // Dejar pasar únicamente nuestro paquete estructurado de 100 bytes
+            if (idlesRegistrados.has(firmaPaquete) && !(len === 100 && opcode === 0x1)) {
+                return;
+            }
+
+            if (len === 100 && opcode === 0x1) {
+                console.log(`\n[${tipoHook}] ==================================================`);
+                console.log(`[${tipoHook}] INSPECCIONANDO: Paquete Estructurado de 100 Bytes`);
+                console.log(`    -> Opcode principal: 0x${opcode.toString(16)}`);
+                console.log(`==========================================================`);
+
+                // 1. Volcado en memoria crudo (Hexadecimal + ASCII)
+                try {
+                    console.log(hexdump(bufferPtr, { length: 100, ansi: true }));
+                } catch (hexErr) {
+                    console.log(`[!] Error en hexdump: ${hexErr.message}`);
+                }
+
+                // 2. RASTREO PROFUNDO DE PILA (Bypass de exitlag.dll)
+                console.log(`\n[Rastreo de Origen Oculto en game.exe]`);
+                
+                const gameModule = Process.getModuleByName("game.exe");
+                const gameBase = gameModule.base;
+                const gameEnd = gameBase.add(gameModule.size);
+
+                // Forzar un escaneo manual de la pila de ejecución de la CPU usando un Backtracer Fuzzy
+                const backtrace = Thread.backtrace(contexto, Backtracer.FUZZY);
+                let encontrado = false;
+
+                backtrace.forEach(function(address) {
+                    // Validar matemáticamente si la dirección está dentro de game.exe,
+                    // saltándose lo que informe findModuleByAddress si está camuflado por el proxy
+                    if (address.compare(gameBase) >= 0 && address.compare(gameEnd) < 0) {
+                        const offset = address.sub(gameBase);
+                        console.log(`   [->] ¡ORIGEN ENCONTRADO! game.exe!0x${offset.toString(16)} \t(Física: ${address})`);
+                        encontrado = true;
+                    }
+                });
+
+                if (!encontrado) {
+                    console.log("   [-] La dirección de origen directa está oculta en registros. Analizando puntero de retorno...");
+                    // Intento desesperado: leer directamente el registro de retorno de la CPU (LR o las primeras posiciones de la pila)
+                    try {
+                        const returnAddress = contexto.pc || contexto.lr;
+                        if (returnAddress) {
+                            console.log(`   [->] Dirección de retorno sugerida por CPU: ${returnAddress}`);
+                        }
+                    } catch (cpuErr) {}
+                }
+
+                console.log(`==========================================================\n`);
+            }
+        }
+    } catch (error) {
+        console.log(`[!] Error en analizarPaquete: ${error.message}`);
+    }
+}
+
+function buscarYHookear() {
+    if (ganchosAplicados) return;
+
+    let module = null;
+    try {
+        module = Process.getModuleByName("ws2_32.dll");
+    } catch (error) {
+        console.log("[-] ws2_32.dll no mapeada en memoria. Reintentando...");
+        setTimeout(buscarYHookear, 1000);
+        return;
+    }
+
+    console.log("[*] ws2_32.dll detectada exitosamente en la base: " + module.base);
+    ganchosAplicados = true;
+
+    const exports = module.enumerateExports();
+    let addrSend = null;
+
+    for (let i = 0; i < exports.length; i++) {
+        if (exports[i].name === "send") {
+            addrSend = exports[i].address;
+            break;
+        }
+    }
+
+    if (addrSend && !addrSend.isNull()) {
+        try {
+            console.log("[+] Inyectando gancho en exportación: send -> [" + addrSend + "]");
+            Interceptor.attach(addrSend, {
+                onEnter: function(args) {
+                    // Pasamos obligatoriamente 'this.context' para extraer los registros crudos de la CPU
+                    analizarPaquete("send", args[1], args[2].toUInt32(), this.context);
+                }
+            });
+            console.log("[+] Gancho 'send' operativo.");
+        } catch (err) {
+            console.log("[-] Error al adjuntar 'send': " + err.message);
+        }
+    }
+}
+
+buscarYHookear();
