@@ -1,3 +1,5 @@
+## Detector de coordenadas actuales relativas a la pantalla del juego devuelve X,Y
+
 import win32api
 import win32gui
 import win32con
